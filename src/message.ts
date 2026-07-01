@@ -1,5 +1,10 @@
 import type { gmail_v1 } from "googleapis";
 import { PDFParse } from "pdf-parse";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const METADATA_HEADERS = [
   "From",
@@ -50,16 +55,30 @@ export type AttachmentContent = AttachmentSummary & {
   isText: boolean;
 };
 
+export const INLINE_ATTACHMENT_PREFIX = "inline:";
+
 function decodeBase64Url(data: string): string {
   const normalized = data.replaceAll("-", "+").replaceAll("_", "/");
   const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
   return Buffer.from(padded, "base64").toString("utf8");
 }
 
-function decodeBase64UrlBytes(data: string): Buffer {
+export function normalizeBase64Url(data: string): string {
   const normalized = data.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  return Buffer.from(padded, "base64");
+  return normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+}
+
+function decodeBase64UrlBytes(data: string): Buffer {
+  return Buffer.from(normalizeBase64Url(data), "base64");
+}
+
+export function looksLikePdfData(data: string): boolean {
+  if (!data) {
+    return false;
+  }
+
+  const bytes = decodeBase64UrlBytes(data);
+  return bytes.subarray(0, 5).toString("ascii") === "%PDF-";
 }
 
 function stripHtml(html: string): string {
@@ -140,31 +159,49 @@ function isTextualMimeType(mimeType: string | null): boolean {
   );
 }
 
+function toSyntheticAttachmentId(partPath: string): string {
+  return `${INLINE_ATTACHMENT_PREFIX}${partPath}`;
+}
+
+function isAttachmentPart(part: gmail_v1.Schema$MessagePart | undefined): boolean {
+  if (!part) {
+    return false;
+  }
+
+  const hasAttachmentId = Boolean(part.body?.attachmentId);
+  const hasInlineAttachmentData = Boolean(part.filename && part.body?.data);
+  return hasAttachmentId || hasInlineAttachmentData;
+}
+
+type AttachmentMatch = AttachmentSummary & {
+  data: string | null;
+};
+
 function collectAttachmentParts(
   part: gmail_v1.Schema$MessagePart | undefined,
   attachments: AttachmentSummary[],
   messageId: string | null,
   threadId: string | null,
+  partPath = "0",
 ): void {
   if (!part) {
     return;
   }
 
-  const attachmentId = part.body?.attachmentId ?? null;
-  if (attachmentId) {
+  if (isAttachmentPart(part)) {
     attachments.push({
       messageId,
       threadId,
       partId: part.partId ?? null,
-      attachmentId,
+      attachmentId: part.body?.attachmentId ?? toSyntheticAttachmentId(partPath),
       filename: part.filename ?? null,
       mimeType: part.mimeType ?? null,
       size: part.body?.size ?? null,
     });
   }
 
-  for (const child of part.parts ?? []) {
-    collectAttachmentParts(child, attachments, messageId, threadId);
+  for (const [index, child] of (part.parts ?? []).entries()) {
+    collectAttachmentParts(child, attachments, messageId, threadId, `${partPath}.${index}`);
   }
 }
 
@@ -227,6 +264,46 @@ export function summarizeAttachments(message: gmail_v1.Schema$Message): Attachme
   return attachments;
 }
 
+export function findAttachment(
+  message: gmail_v1.Schema$Message,
+  attachmentId: string,
+): AttachmentMatch | null {
+  const attachments: AttachmentMatch[] = [];
+
+  function visit(part: gmail_v1.Schema$MessagePart | undefined, partPath = "0"): void {
+    if (!part) {
+      return;
+    }
+
+    if (isAttachmentPart(part)) {
+      const resolvedAttachmentId = part.body?.attachmentId ?? toSyntheticAttachmentId(partPath);
+      if (resolvedAttachmentId === attachmentId) {
+        attachments.push({
+          messageId: message.id ?? null,
+          threadId: message.threadId ?? null,
+          partId: part.partId ?? null,
+          attachmentId: resolvedAttachmentId,
+          filename: part.filename ?? null,
+          mimeType: part.mimeType ?? null,
+          size: part.body?.size ?? null,
+          data: part.body?.data ?? null,
+        });
+        return;
+      }
+    }
+
+    for (const [index, child] of (part.parts ?? []).entries()) {
+      visit(child, `${partPath}.${index}`);
+      if (attachments.length > 0) {
+        return;
+      }
+    }
+  }
+
+  visit(message.payload ?? undefined);
+  return attachments[0] ?? null;
+}
+
 export function renderAttachmentContent(content: AttachmentContent): string {
   const lines = [
     `messageId: ${content.messageId ?? ""}`,
@@ -266,9 +343,68 @@ export function decodeAttachmentData(data: string, maxChars: number): { text: st
   return truncate(decoded, maxChars);
 }
 
-export async function performOcr(data: string, filename: string | null): Promise<string> {
-  // Placeholder for OCR implementation
-  return `[OCR Fallback] The PDF seems to be scanned. (OCR content not yet implemented for ${filename ?? 'unknown file'})`;
+function execFileAsync(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { ...options, encoding: "utf8" }, (error, stdout, stderr) => {
+      if (error) {
+        const message = stderr.trim() || stdout.trim() || error.message;
+        reject(new Error(message));
+        return;
+      }
+
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+export async function performOcr(
+  data: string,
+  filename: string | null,
+  maxChars: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "mailcmp-ocr-"));
+  const pdfPath = path.join(tempDir, filename && filename.toLowerCase().endsWith(".pdf") ? filename : "attachment.pdf");
+  const scriptPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../scripts/ocr.swift");
+  const swiftCachePath = path.join(tempDir, "swift-cache");
+
+  try {
+    await writeFile(pdfPath, decodeBase64UrlBytes(data));
+    await mkdir(swiftCachePath, { recursive: true });
+
+    const { stdout } = await execFileAsync(
+      "/usr/bin/swift",
+      [scriptPath, pdfPath],
+      {
+        env: {
+          ...process.env,
+          CLANG_MODULE_CACHE_PATH: swiftCachePath,
+        },
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    );
+
+    const text = stdout.trim();
+    if (!text) {
+      return {
+        text: `[OCR Fallback] OCR returned no text for ${filename ?? "unknown file"}.`,
+        truncated: false,
+      };
+    }
+
+    return truncate(text, maxChars);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      text: `[OCR Fallback] Local OCR failed for ${filename ?? "unknown file"}: ${message}`,
+      truncated: false,
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 export async function extractPdfText(

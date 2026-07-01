@@ -4,3 +4,4 @@ build/
 credentials.json
 *.log
 .DS_Store
+.swift-cache/

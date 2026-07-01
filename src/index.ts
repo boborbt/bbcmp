@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { DEFAULT_MAX_BODY_CHARS } from "./config.js";
 import { INSTANCE_LABEL, TOOL_PREFIX } from "./config.js";
+import { createCalendarEvent } from "./calendar.js";
 import {
   createGmailLabel,
   getGmailAttachment,
@@ -20,10 +21,13 @@ import {
 import {
   decodeAttachmentData,
   extractPdfText,
+  findAttachment,
+  looksLikePdfData,
   performOcr,
   detailMessage,
   METADATA_HEADERS,
   isTextualAttachment,
+  normalizeBase64Url,
   renderAttachmentContent,
   renderMessageDetails,
   summarizeMessage,
@@ -56,6 +60,7 @@ function jsonResponse(value: unknown) {
 
 function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  console.error("Gmail MCP error:", error);
   return textResponse(`Gmail MCP error: ${message}`);
 }
 
@@ -324,6 +329,38 @@ server.registerTool(
 );
 
 server.registerTool(
+  toolName("create_calendar_event"),
+  {
+    description:
+      "Create a macOS Calendar event using local system automation. Dates must be ISO 8601 datetimes with an explicit timezone offset.",
+    inputSchema: {
+      title: z.string().min(1).max(500).describe("Event title"),
+      start: z.string().datetime({ offset: true }).describe("Start datetime, e.g. 2026-07-01T15:00:00+02:00"),
+      end: z.string().datetime({ offset: true }).describe("End datetime, e.g. 2026-07-01T16:00:00+02:00"),
+      calendar: z.string().min(1).max(500).optional().describe("Optional macOS Calendar name; defaults to the first writable calendar"),
+      location: z.string().max(2000).optional().describe("Optional event location"),
+      notes: z.string().max(20000).optional().describe("Optional event notes/description"),
+    },
+  },
+  async ({ title, start, end, calendar, location, notes }) => {
+    try {
+      return jsonResponse({
+        event: await createCalendarEvent({
+          title,
+          start,
+          end,
+          calendar,
+          location,
+          notes,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
   toolName("get_attachment"),
   {
     description:
@@ -336,38 +373,59 @@ server.registerTool(
   },
   async ({ messageId, attachmentId, filename }) => {
     try {
-      const message = await getGmailMessage(messageId, "full");
-      const attachment = await getGmailAttachment({
-        messageId,
-        attachmentId,
-      });
+      const resolvedMessageId = messageId.trim();
+      const resolvedAttachmentId = attachmentId.trim();
+      const resolvedFilename = filename?.trim() || undefined;
+      const message = await getGmailMessage(resolvedMessageId, "full");
+      const matched = findAttachment(message, resolvedAttachmentId);
 
-      const matched = summarizeAttachments(message).find((item) => item.attachmentId === attachmentId);
+      const attachment = resolvedAttachmentId.startsWith("inline:")
+        ? (() => {
+            if (!matched?.data) {
+              throw new Error(`Inline attachment not found on message ${resolvedMessageId}: ${resolvedAttachmentId}`);
+            }
+
+            return {
+              data: matched.data,
+              size: matched.size,
+            };
+          })()
+        : await getGmailAttachment({
+            messageId: resolvedMessageId,
+            attachmentId: resolvedAttachmentId,
+          });
+
       const mimeType = matched?.mimeType ?? null;
-      const effectiveFilename = filename ?? matched?.filename ?? null;
+      const effectiveFilename = resolvedFilename ?? matched?.filename ?? null;
       const data = attachment.data ?? "";
-      const isPdf = mimeType === "application/pdf" || (effectiveFilename?.toLowerCase().endsWith(".pdf") ?? false);
+      const isPdf =
+        mimeType === "application/pdf" ||
+        (effectiveFilename?.toLowerCase().endsWith(".pdf") ?? false) ||
+        looksLikePdfData(data);
 
       if (isPdf && data) {
         const extracted = await extractPdfText(data, 25000);
         let text = extracted.text;
+        let textTruncated = extracted.truncated;
 
         if (extracted.isScanned) {
-          text = await performOcr(data, filename ?? null);
+          const ocr = await performOcr(data, effectiveFilename, 25000);
+          text = ocr.text;
+          textTruncated = ocr.truncated;
         }
 
         return textResponse(
           renderAttachmentContent({
-            messageId,
+            messageId: resolvedMessageId,
             threadId: message.threadId ?? null,
             partId: matched?.partId ?? null,
-            attachmentId,
+            attachmentId: resolvedAttachmentId,
             filename: effectiveFilename,
             mimeType,
             size: attachment.size ?? matched?.size ?? null,
             isText: true,
             text: text,
-            textTruncated: extracted.truncated,
+            textTruncated: textTruncated,
             base64: null,
           }),
         );
@@ -377,10 +435,10 @@ server.registerTool(
         const decoded = decodeAttachmentData(data, 20000);
         return textResponse(
           renderAttachmentContent({
-            messageId,
+            messageId: resolvedMessageId,
             threadId: message.threadId ?? null,
             partId: matched?.partId ?? null,
-            attachmentId,
+            attachmentId: resolvedAttachmentId,
             filename: effectiveFilename,
             mimeType,
             size: attachment.size ?? matched?.size ?? null,
@@ -394,17 +452,17 @@ server.registerTool(
 
       return textResponse(
         renderAttachmentContent({
-          messageId,
+          messageId: resolvedMessageId,
           threadId: message.threadId ?? null,
           partId: matched?.partId ?? null,
-            attachmentId,
-            filename: effectiveFilename,
-            mimeType,
-            size: attachment.size ?? matched?.size ?? null,
-            isText: false,
+          attachmentId: resolvedAttachmentId,
+          filename: effectiveFilename,
+          mimeType,
+          size: attachment.size ?? matched?.size ?? null,
+          isText: false,
           text: null,
           textTruncated: false,
-          base64: data,
+          base64: normalizeBase64Url(data),
         }),
       );
     } catch (error) {
