@@ -1,0 +1,30 @@
+{
+  "name": "mailcmp",
+  "version": "0.1.0",
+  "description": "Read-only Gmail MCP server for AI agents",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "gmail-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "auth": "npm run build && node build/auth.js",
+    "build": "tsc && chmod 755 build/index.js",
+    "dev": "npm run build && node build/index.js",
+    "start": "node build/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "googleapis": "^150.0.1",
+    "pdf-parse": "^2.4.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
