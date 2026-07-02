@@ -7,6 +7,8 @@ import { DEFAULT_MAX_BODY_CHARS } from "./config.js";
 import { INSTANCE_LABEL, TOOL_PREFIX } from "./config.js";
 import { createCalendarEvent } from "./calendar.js";
 import {
+  batchModifyMessageLabels,
+  collectGmailMessageIds,
   createGmailLabel,
   getGmailAttachment,
   getAuthStatus,
@@ -63,6 +65,28 @@ function errorResponse(error: unknown) {
   console.error("Gmail MCP error:", error);
   return textResponse(`Gmail MCP error: ${message}`);
 }
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+const bulkMessageIdsSchema = z
+  .array(z.string().min(1))
+  .min(1)
+  .max(1000)
+  .describe("Gmail message IDs returned by Gmail list/search tools.");
+
+const labelNamesOrIdsSchema = z
+  .array(z.string().min(1))
+  .max(20)
+  .default([])
+  .describe("Gmail label IDs or exact label names.");
+
+const archiveAddLabelsSchema = z
+  .array(z.string().min(1))
+  .min(1)
+  .max(20)
+  .describe("Gmail label IDs or exact label names to add before removing INBOX.");
 
 server.registerTool(
   toolName("auth_status"),
@@ -146,6 +170,55 @@ server.registerTool(
 );
 
 server.registerTool(
+  toolName("list_inbox"),
+  {
+    description:
+      "List messages currently in the Gmail inbox without a search query. Returns IDs, headers, labels, and snippets only; use pageToken to continue.",
+    inputSchema: {
+      maxResults: z.number().int().min(1).max(100).default(50),
+      pageToken: z.string().optional(),
+    },
+  },
+  async ({ maxResults, pageToken }) => {
+    try {
+      const gmail = await getGmailClient();
+      const listResponse = await gmail.users.messages.list({
+        userId: "me",
+        maxResults,
+        pageToken,
+        labelIds: ["INBOX"],
+      });
+
+      const refs = listResponse.data.messages ?? [];
+      const messages = await Promise.all(
+        refs.map(async (ref) => {
+          if (!ref.id) {
+            return null;
+          }
+
+          const response = await gmail.users.messages.get({
+            userId: "me",
+            id: ref.id,
+            format: "metadata",
+            metadataHeaders: METADATA_HEADERS,
+          });
+
+          return summarizeMessage(response.data);
+        }),
+      );
+
+      return jsonResponse({
+        resultSizeEstimate: listResponse.data.resultSizeEstimate ?? null,
+        nextPageToken: listResponse.data.nextPageToken ?? null,
+        messages: messages.filter(Boolean),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
   toolName("get_message"),
   {
     description:
@@ -214,6 +287,10 @@ server.registerTool(
     try {
       const addLabelIds = await resolveLabelIds(addLabels);
       const removeLabelIds = await resolveLabelIds(removeLabels);
+      if (removeLabelIds.includes("INBOX") && addLabelIds.length === 0) {
+        throw new Error("Archiving requires adding at least one label before removing INBOX.");
+      }
+
       const message = await modifyMessageLabels({
         messageId: id,
         addLabelIds,
@@ -232,20 +309,163 @@ server.registerTool(
 server.registerTool(
   toolName("archive_message"),
   {
-    description: "Archive one Gmail message by removing the INBOX label.",
+    description: "Add one or more labels to a Gmail message, then archive it by removing the INBOX label.",
     inputSchema: {
       id: z.string().min(1).describe(`Gmail message ID returned by ${toolName("search")}`),
+      addLabels: archiveAddLabelsSchema,
     },
   },
-  async ({ id }) => {
+  async ({ id, addLabels }) => {
     try {
+      const addLabelIds = await resolveLabelIds(addLabels);
       const message = await modifyMessageLabels({
         messageId: id,
+        addLabelIds,
         removeLabelIds: ["INBOX"],
       });
 
       return jsonResponse({
+        addLabelIds,
+        removeLabelIds: ["INBOX"],
         message: summarizeMessage(message),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("bulk_label_messages"),
+  {
+    description:
+      "Add and/or remove Gmail labels on many messages in one operation. Labels can be provided by Gmail label ID or exact label name; removing INBOX requires addLabels.",
+    inputSchema: {
+      ids: bulkMessageIdsSchema,
+      addLabels: labelNamesOrIdsSchema,
+      removeLabels: labelNamesOrIdsSchema,
+    },
+  },
+  async ({ ids, addLabels, removeLabels }) => {
+    try {
+      if (addLabels.length === 0 && removeLabels.length === 0) {
+        throw new Error("At least one label must be added or removed.");
+      }
+
+      const addLabelIds = await resolveLabelIds(addLabels);
+      const removeLabelIds = await resolveLabelIds(removeLabels);
+      if (removeLabelIds.includes("INBOX") && addLabelIds.length === 0) {
+        throw new Error("Archiving requires adding at least one label before removing INBOX.");
+      }
+
+      const result = await batchModifyMessageLabels({
+        messageIds: uniqueStrings(ids),
+        addLabelIds,
+        removeLabelIds,
+      });
+
+      return jsonResponse({
+        modified: result.requested,
+        batches: result.batches,
+        addLabelIds,
+        removeLabelIds,
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("bulk_archive_messages"),
+  {
+    description:
+      "Add one or more labels to many Gmail messages, then archive them in one operation by removing INBOX.",
+    inputSchema: {
+      ids: bulkMessageIdsSchema,
+      addLabels: archiveAddLabelsSchema,
+    },
+  },
+  async ({ ids, addLabels }) => {
+    try {
+      const addLabelIds = await resolveLabelIds(addLabels);
+      const result = await batchModifyMessageLabels({
+        messageIds: uniqueStrings(ids),
+        addLabelIds,
+        removeLabelIds: ["INBOX"],
+      });
+
+      return jsonResponse({
+        archived: result.requested,
+        batches: result.batches,
+        addLabelIds,
+        removeLabelIds: ["INBOX"],
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("archive_search"),
+  {
+    description:
+      "Add one or more labels to all Gmail messages matching a Gmail search query, then archive them. The server paginates internally and removes INBOX in bulk.",
+    inputSchema: {
+      q: z.string().min(1).describe("Gmail search query, e.g. older_than:7d or before:2026/06/25"),
+      maxMessages: z.number().int().min(1).max(5000).default(1000),
+      labelIds: z
+        .array(z.string().min(1))
+        .max(10)
+        .default(["INBOX"])
+        .describe("Labels to restrict the search. Defaults to INBOX."),
+      addLabels: archiveAddLabelsSchema,
+      includeSpamTrash: z.boolean().default(false),
+      dryRun: z.boolean().default(false).describe("When true, return matching IDs without modifying messages."),
+    },
+  },
+  async ({ q, maxMessages, labelIds, addLabels, includeSpamTrash, dryRun }) => {
+    try {
+      const searchLabelIds = await resolveLabelIds(labelIds);
+      const found = await collectGmailMessageIds({
+        q,
+        labelIds: searchLabelIds,
+        includeSpamTrash,
+        maxMessages,
+      });
+      const ids = uniqueStrings(found.ids);
+
+      if (dryRun || ids.length === 0) {
+        return jsonResponse({
+          dryRun,
+          query: q,
+          labelIds: searchLabelIds,
+          matched: ids.length,
+          resultSizeEstimate: found.resultSizeEstimate,
+          nextPageToken: found.nextPageToken,
+          truncated: Boolean(found.nextPageToken),
+          ids,
+        });
+      }
+
+      const addLabelIds = await resolveLabelIds(addLabels);
+      const result = await batchModifyMessageLabels({
+        messageIds: ids,
+        addLabelIds,
+        removeLabelIds: ["INBOX"],
+      });
+
+      return jsonResponse({
+        archived: result.requested,
+        batches: result.batches,
+        query: q,
+        labelIds: searchLabelIds,
+        addLabelIds,
+        removeLabelIds: ["INBOX"],
+        resultSizeEstimate: found.resultSizeEstimate,
+        truncated: Boolean(found.nextPageToken),
+        nextPageToken: found.nextPageToken,
       });
     } catch (error) {
       return errorResponse(error);

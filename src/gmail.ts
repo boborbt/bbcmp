@@ -34,6 +34,15 @@ export type GmailLabel = {
   labelListVisibility: string | null;
 };
 
+export type GmailMessageIdSearchResult = {
+  ids: string[];
+  nextPageToken: string | null;
+  resultSizeEstimate: number | null;
+};
+
+const GMAIL_LIST_PAGE_SIZE = 500;
+const GMAIL_BATCH_MODIFY_SIZE = 1000;
+
 async function exists(pathname: string): Promise<boolean> {
   try {
     await access(pathname);
@@ -138,6 +147,78 @@ export async function modifyMessageLabels(params: {
   });
 
   return response.data;
+}
+
+export async function batchModifyMessageLabels(params: {
+  messageIds: string[];
+  addLabelIds?: string[];
+  removeLabelIds?: string[];
+}): Promise<{ requested: number; batches: number }> {
+  if (params.messageIds.length === 0) {
+    throw new Error("At least one message ID is required.");
+  }
+
+  const gmail = await getGmailClient();
+  let batches = 0;
+
+  for (let index = 0; index < params.messageIds.length; index += GMAIL_BATCH_MODIFY_SIZE) {
+    const ids = params.messageIds.slice(index, index + GMAIL_BATCH_MODIFY_SIZE);
+    await gmail.users.messages.batchModify({
+      userId: "me",
+      requestBody: {
+        ids,
+        addLabelIds: params.addLabelIds,
+        removeLabelIds: params.removeLabelIds,
+      },
+    });
+    batches += 1;
+  }
+
+  return {
+    requested: params.messageIds.length,
+    batches,
+  };
+}
+
+export async function collectGmailMessageIds(params: {
+  q?: string;
+  labelIds?: string[];
+  includeSpamTrash?: boolean;
+  maxMessages: number;
+}): Promise<GmailMessageIdSearchResult> {
+  if (params.maxMessages < 1) {
+    throw new Error("maxMessages must be at least 1.");
+  }
+
+  const gmail = await getGmailClient();
+  const ids: string[] = [];
+  let nextPageToken: string | null = null;
+  let resultSizeEstimate: number | null = null;
+
+  do {
+    const pageSize = Math.min(GMAIL_LIST_PAGE_SIZE, params.maxMessages - ids.length);
+    const response: { data: gmail_v1.Schema$ListMessagesResponse } = await gmail.users.messages.list({
+      userId: "me",
+      q: params.q || undefined,
+      maxResults: pageSize,
+      pageToken: nextPageToken ?? undefined,
+      labelIds: params.labelIds,
+      includeSpamTrash: params.includeSpamTrash,
+    });
+
+    resultSizeEstimate = response.data.resultSizeEstimate ?? resultSizeEstimate;
+    const pageIds = (response.data.messages ?? [])
+      .map((message: gmail_v1.Schema$Message) => message.id)
+      .filter((id): id is string => Boolean(id));
+    ids.push(...pageIds);
+    nextPageToken = response.data.nextPageToken ?? null;
+  } while (nextPageToken && ids.length < params.maxMessages);
+
+  return {
+    ids,
+    nextPageToken,
+    resultSizeEstimate,
+  };
 }
 
 export async function createGmailLabel(name: string): Promise<GmailLabel> {

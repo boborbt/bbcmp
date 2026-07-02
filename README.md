@@ -7,9 +7,13 @@ This project exposes your Gmail mailbox to MCP-compatible AI agents through loca
 - `gmail_auth_status`: verifies whether OAuth files are present.
 - `gmail_list_labels`: lists Gmail labels.
 - `gmail_search`: searches mail with Gmail search syntax and returns message IDs, headers, labels, and snippets.
+- `gmail_list_inbox`: lists inbox messages without a Gmail search query, returning message IDs, headers, labels, and snippets.
 - `gmail_get_message`: fetches one message by ID, optionally including the plaintext body.
-- `gmail_label_message`: adds and/or removes Gmail labels by label ID or exact label name.
-- `gmail_archive_message`: removes the `INBOX` label from a message.
+- `gmail_label_message`: adds and/or removes Gmail labels by label ID or exact label name. Removing `INBOX` requires adding at least one label.
+- `gmail_archive_message`: adds one or more labels to a message, then removes the `INBOX` label.
+- `gmail_bulk_label_messages`: adds and/or removes labels on up to 1000 message IDs in one operation. Removing `INBOX` requires adding at least one label.
+- `gmail_bulk_archive_messages`: adds one or more labels to up to 1000 message IDs, then removes `INBOX` in one operation.
+- `gmail_archive_search`: finds all messages matching a Gmail query, adds one or more labels, then removes `INBOX` in bulk. The server paginates internally.
 - `gmail_create_label`: creates a Gmail label.
 - `gmail_reply_message`: sends a plain-text reply to a message.
 - `gmail_send_message`: sends a new plain-text Gmail message.
@@ -140,3 +144,4 @@ Then configure one MCP server entry per account:
 - On macOS, scanned PDFs fall back to local OCR via `swift` + Apple `Vision`/`PDFKit`, with no external OCR service.
 - `gmail_search` accepts the same query syntax as the Gmail search box.
 - Gmail list results only include message IDs, so this server fetches metadata for each listed message before returning search results.
+- Archive-oriented tools require labels to be added as part of the same Gmail modify operation, so agents cannot remove `INBOX` without classifying messages first.
