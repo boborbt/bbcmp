@@ -19,6 +19,32 @@ function parseIsoDate(value, field) {
   return parsed;
 }
 
+function normalizeAttendees(value) {
+  if (value == null) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    fail("Invalid attendees. Expected an array of email addresses.");
+  }
+
+  const attendees = [];
+  const seen = {};
+  for (let index = 0; index < value.length; index += 1) {
+    const email = requireNonEmptyString(value[index], `attendees[${index}]`).toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      fail(`Invalid attendees[${index}]. Expected an email address.`);
+    }
+
+    if (!seen[email]) {
+      seen[email] = true;
+      attendees.push(email);
+    }
+  }
+
+  return attendees;
+}
+
 function pickWritableCalendar(calendarApp, requestedName) {
   if (requestedName) {
     const calendar = calendarApp.calendars.byName(requestedName);
@@ -57,6 +83,7 @@ function run(argv) {
   const title = requireNonEmptyString(input.title, "title");
   const startDate = parseIsoDate(input.start, "start");
   const endDate = parseIsoDate(input.end, "end");
+  const attendees = normalizeAttendees(input.attendees);
 
   if (endDate.getTime() <= startDate.getTime()) {
     fail("end must be after start.");
@@ -84,6 +111,9 @@ function run(argv) {
 
   const event = calendarApp.Event(properties);
   targetCalendar.events.push(event);
+  for (let index = 0; index < attendees.length; index += 1) {
+    event.attendees.push(calendarApp.Attendee({ email: attendees[index] }));
+  }
 
   return JSON.stringify({
     calendar: targetCalendar.name(),
@@ -92,5 +122,6 @@ function run(argv) {
     end: event.endDate().toISOString(),
     location: properties.location || null,
     notes: properties.description || null,
+    attendees,
   });
 }

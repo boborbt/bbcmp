@@ -9,6 +9,7 @@ export type CalendarEventInput = {
   calendar?: string;
   location?: string;
   notes?: string;
+  attendees?: string[];
 };
 
 export type CalendarEventResult = {
@@ -18,6 +19,7 @@ export type CalendarEventResult = {
   end: string;
   location: string | null;
   notes: string | null;
+  attendees: string[];
 };
 
 function execFileAsync(command: string, args: string[]): Promise<string> {

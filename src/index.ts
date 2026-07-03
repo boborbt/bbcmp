@@ -560,9 +560,14 @@ server.registerTool(
       calendar: z.string().min(1).max(500).optional().describe("Optional macOS Calendar name; defaults to the first writable calendar"),
       location: z.string().max(2000).optional().describe("Optional event location"),
       notes: z.string().max(20000).optional().describe("Optional event notes/description"),
+      attendees: z
+        .array(z.string().email().max(320))
+        .max(200)
+        .optional()
+        .describe("Optional attendee email addresses to invite"),
     },
   },
-  async ({ title, start, end, calendar, location, notes }) => {
+  async ({ title, start, end, calendar, location, notes, attendees }) => {
     try {
       return jsonResponse({
         event: await createCalendarEvent({
@@ -572,6 +577,7 @@ server.registerTool(
           calendar,
           location,
           notes,
+          attendees,
         }),
       });
     } catch (error) {

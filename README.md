@@ -17,7 +17,7 @@ This project exposes your Gmail mailbox to MCP-compatible AI agents through loca
 - `gmail_create_label`: creates a Gmail label.
 - `gmail_reply_message`: sends a plain-text reply to a message.
 - `gmail_send_message`: sends a new plain-text Gmail message.
-- `gmail_create_calendar_event`: creates a macOS Calendar event via local system automation.
+- `gmail_create_calendar_event`: creates a macOS Calendar event via local system automation, with optional attendee invites by email.
 - `gmail_list_attachments`: lists attachments on a message, including inline payload attachments Gmail does not store behind a separate attachment fetch.
 - `gmail_get_attachment`: reads one attachment by attachment ID. PDFs are text-extracted when possible; other binary files are returned as standard base64.
 
@@ -140,6 +140,7 @@ Then configure one MCP server entry per account:
 
 - The service uses Gmail's `gmail.modify` and `gmail.send` scopes so it can label, archive, reply to, send mail, and read attachments.
 - `gmail_create_calendar_event` uses macOS `osascript` automation and may trigger a one-time Calendar permission prompt from the OS.
+- `gmail_create_calendar_event` accepts optional `attendees` as email addresses. Invitation delivery depends on the selected Calendar account supporting event invitations.
 - `gmail_get_attachment` returns text for textual attachments, text-extracted PDFs when possible, and standard base64 for other binary attachments.
 - On macOS, scanned PDFs fall back to local OCR via `swift` + Apple `Vision`/`PDFKit`, with no external OCR service.
 - `gmail_search` accepts the same query syntax as the Gmail search box.
