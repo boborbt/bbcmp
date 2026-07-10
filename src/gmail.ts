@@ -40,6 +40,24 @@ export type GmailMessageIdSearchResult = {
   resultSizeEstimate: number | null;
 };
 
+export type GmailCount = {
+  count: number;
+  resultSizeEstimate: number | null;
+};
+
+export type GmailInboxCounts = {
+  messageCount: number;
+  threadCount: number;
+  unreadMessageCount: number;
+  unreadThreadCount: number;
+  estimates: {
+    messageCount: number | null;
+    threadCount: number | null;
+    unreadMessageCount: number | null;
+    unreadThreadCount: number | null;
+  };
+};
+
 const GMAIL_LIST_PAGE_SIZE = 500;
 const GMAIL_BATCH_MODIFY_SIZE = 1000;
 
@@ -129,6 +147,98 @@ export async function getGmailMessage(messageId: string, format: "full" | "metad
   });
 
   return response.data;
+}
+
+async function countGmailMessages(
+  gmail: gmail_v1.Gmail,
+  params: {
+    q?: string;
+    labelIds?: string[];
+    includeSpamTrash?: boolean;
+  },
+): Promise<GmailCount> {
+  let count = 0;
+  let pageToken: string | undefined;
+  let resultSizeEstimate: number | null = null;
+
+  do {
+    const response = await gmail.users.messages.list({
+      userId: "me",
+      q: params.q || undefined,
+      labelIds: params.labelIds,
+      includeSpamTrash: params.includeSpamTrash,
+      maxResults: GMAIL_LIST_PAGE_SIZE,
+      pageToken,
+    });
+
+    resultSizeEstimate = response.data.resultSizeEstimate ?? resultSizeEstimate;
+    count += (response.data.messages ?? []).length;
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return {
+    count,
+    resultSizeEstimate,
+  };
+}
+
+async function countGmailThreads(
+  gmail: gmail_v1.Gmail,
+  params: {
+    q?: string;
+    labelIds?: string[];
+    includeSpamTrash?: boolean;
+  },
+): Promise<GmailCount> {
+  let count = 0;
+  let pageToken: string | undefined;
+  let resultSizeEstimate: number | null = null;
+
+  do {
+    const response = await gmail.users.threads.list({
+      userId: "me",
+      q: params.q || undefined,
+      labelIds: params.labelIds,
+      includeSpamTrash: params.includeSpamTrash,
+      maxResults: GMAIL_LIST_PAGE_SIZE,
+      pageToken,
+    });
+
+    resultSizeEstimate = response.data.resultSizeEstimate ?? resultSizeEstimate;
+    count += (response.data.threads ?? []).length;
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return {
+    count,
+    resultSizeEstimate,
+  };
+}
+
+export async function getGmailInboxCounts(client?: gmail_v1.Gmail): Promise<GmailInboxCounts> {
+  const gmail = client ?? await getGmailClient();
+  const inboxParams = { labelIds: ["INBOX"] };
+  const unreadInboxParams = { labelIds: ["INBOX"], q: "is:unread" };
+
+  const [messages, threads, unreadMessages, unreadThreads] = await Promise.all([
+    countGmailMessages(gmail, inboxParams),
+    countGmailThreads(gmail, inboxParams),
+    countGmailMessages(gmail, unreadInboxParams),
+    countGmailThreads(gmail, unreadInboxParams),
+  ]);
+
+  return {
+    messageCount: messages.count,
+    threadCount: threads.count,
+    unreadMessageCount: unreadMessages.count,
+    unreadThreadCount: unreadThreads.count,
+    estimates: {
+      messageCount: messages.resultSizeEstimate,
+      threadCount: threads.resultSizeEstimate,
+      unreadMessageCount: unreadMessages.resultSizeEstimate,
+      unreadThreadCount: unreadThreads.resultSizeEstimate,
+    },
+  };
 }
 
 export async function modifyMessageLabels(params: {
@@ -259,13 +369,14 @@ function normalizeSubject(subject: string | null): string {
 export async function replyToMessage(params: {
   messageId: string;
   body: string;
+  cc?: string[];
 }): Promise<gmail_v1.Schema$Message> {
   const gmail = await getGmailClient();
   const original = await gmail.users.messages.get({
     userId: "me",
     id: params.messageId,
     format: "metadata",
-    metadataHeaders: ["From", "Subject", "Message-ID", "Reply-To"],
+    metadataHeaders: ["From", "Subject", "Message-ID", "Reply-To", "References"],
   });
 
   const headers = new Map(
@@ -281,13 +392,17 @@ export async function replyToMessage(params: {
 
   const subject = normalizeSubject(headers.get("subject") ?? null);
   const messageId = headers.get("message-id") ?? null;
-  const referenceHeaders = [messageId].filter((value): value is string => Boolean(value));
+  const referenceHeaders = [headers.get("references"), messageId].filter((value): value is string => Boolean(value));
 
   const mimeParts = [
     `To: ${recipient}`,
     `Subject: ${subject}`,
     `Content-Type: text/plain; charset="UTF-8"`,
   ];
+
+  if (params.cc && params.cc.length > 0) {
+    mimeParts.splice(1, 0, `Cc: ${formatAddressList(params.cc)}`);
+  }
 
   if (messageId) {
     mimeParts.push(`In-Reply-To: ${messageId}`);

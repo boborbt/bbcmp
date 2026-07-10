@@ -13,6 +13,7 @@ import {
   getGmailAttachment,
   getAuthStatus,
   getGmailClient,
+  getGmailInboxCounts,
   getGmailMessage,
   listGmailLabels,
   modifyMessageLabels,
@@ -170,10 +171,28 @@ server.registerTool(
 );
 
 server.registerTool(
+  toolName("inbox_counts"),
+  {
+    description:
+      "Count the Gmail inbox by both messages and threads, including unread counts. Thread counts match Gmail's conversation-oriented inbox view.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      return jsonResponse({
+        inboxCounts: await getGmailInboxCounts(),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
   toolName("list_inbox"),
   {
     description:
-      "List messages currently in the Gmail inbox without a search query. Returns IDs, headers, labels, and snippets only; use pageToken to continue.",
+      "List messages currently in the Gmail inbox without a search query. Returns exact inbox message/thread counts, page counts, IDs, headers, labels, and snippets.",
     inputSchema: {
       maxResults: z.number().int().min(1).max(100).default(50),
       pageToken: z.string().optional(),
@@ -182,14 +201,18 @@ server.registerTool(
   async ({ maxResults, pageToken }) => {
     try {
       const gmail = await getGmailClient();
-      const listResponse = await gmail.users.messages.list({
-        userId: "me",
-        maxResults,
-        pageToken,
-        labelIds: ["INBOX"],
-      });
+      const [inboxCounts, listResponse] = await Promise.all([
+        getGmailInboxCounts(gmail),
+        gmail.users.messages.list({
+          userId: "me",
+          maxResults,
+          pageToken,
+          labelIds: ["INBOX"],
+        }),
+      ]);
 
       const refs = listResponse.data.messages ?? [];
+      const pageThreadIds = new Set(refs.map((ref) => ref.threadId).filter((threadId): threadId is string => Boolean(threadId)));
       const messages = await Promise.all(
         refs.map(async (ref) => {
           if (!ref.id) {
@@ -208,8 +231,12 @@ server.registerTool(
       );
 
       return jsonResponse({
-        resultSizeEstimate: listResponse.data.resultSizeEstimate ?? null,
-        nextPageToken: listResponse.data.nextPageToken ?? null,
+        inboxCounts,
+        page: {
+          messageCount: refs.length,
+          threadCount: pageThreadIds.size,
+          nextPageToken: listResponse.data.nextPageToken ?? null,
+        },
         messages: messages.filter(Boolean),
       });
     } catch (error) {
@@ -495,17 +522,19 @@ server.registerTool(
   toolName("reply_message"),
   {
     description:
-      "Send a plain-text reply to a Gmail message. This replies to the sender and threads the response with the original message.",
+      "Send a plain-text reply to a Gmail message. This replies to the sender, can include additional CC recipients, and threads the response with the original message.",
     inputSchema: {
       id: z.string().min(1).describe(`Gmail message ID returned by ${toolName("search")}`),
       body: z.string().min(1).describe("Plain-text reply body"),
+      cc: z.array(z.string().min(1)).max(20).optional().describe("Optional CC recipient email addresses."),
     },
   },
-  async ({ id, body }) => {
+  async ({ id, body, cc }) => {
     try {
       const message = await replyToMessage({
         messageId: id,
         body,
+        cc,
       });
 
       return jsonResponse({

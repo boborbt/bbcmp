@@ -7,7 +7,8 @@ This project exposes your Gmail mailbox to MCP-compatible AI agents through loca
 - `gmail_auth_status`: verifies whether OAuth files are present.
 - `gmail_list_labels`: lists Gmail labels.
 - `gmail_search`: searches mail with Gmail search syntax and returns message IDs, headers, labels, and snippets.
-- `gmail_list_inbox`: lists inbox messages without a Gmail search query, returning message IDs, headers, labels, and snippets.
+- `gmail_inbox_counts`: counts inbox messages and threads, including unread counts.
+- `gmail_list_inbox`: lists inbox messages without a Gmail search query, returning explicit inbox counts, page counts, message IDs, headers, labels, and snippets.
 - `gmail_get_message`: fetches one message by ID, optionally including the plaintext body.
 - `gmail_label_message`: adds and/or removes Gmail labels by label ID or exact label name. Removing `INBOX` requires adding at least one label.
 - `gmail_archive_message`: adds one or more labels to a message, then removes the `INBOX` label.
@@ -15,7 +16,7 @@ This project exposes your Gmail mailbox to MCP-compatible AI agents through loca
 - `gmail_bulk_archive_messages`: adds one or more labels to up to 1000 message IDs, then removes `INBOX` in one operation.
 - `gmail_archive_search`: finds all messages matching a Gmail query, adds one or more labels, then removes `INBOX` in bulk. The server paginates internally.
 - `gmail_create_label`: creates a Gmail label.
-- `gmail_reply_message`: sends a plain-text reply to a message.
+- `gmail_reply_message`: sends a plain-text reply to a message, with optional CC recipients.
 - `gmail_send_message`: sends a new plain-text Gmail message.
 - `gmail_create_calendar_event`: creates a macOS Calendar event via local system automation, with optional attendee invites by email.
 - `gmail_list_attachments`: lists attachments on a message, including inline payload attachments Gmail does not store behind a separate attachment fetch.
