@@ -37,7 +37,7 @@ struct CalendarHelper {
             try await requireCalendarAccess()
             let args = Array(CommandLine.arguments.dropFirst())
             guard let command = args.first else {
-                throw CalendarHelperError("Usage: calendar-helper <list-calendars|list-events> [options]")
+                throw CalendarHelperError("Usage: calendar-helper <list-calendars|list-events|update-event|delete-event> [options]")
             }
 
             switch command {
@@ -53,6 +53,47 @@ struct CalendarHelper {
                 let maxResults = min(max(Int(options["max"] ?? "100") ?? 100, 1), 500)
                 let calendars = try resolveCalendars(options["calendar"])
                 try output(listEvents(start: start, end: end, calendars: calendars, maxResults: maxResults))
+            case "update-event":
+                let options = try parseOptions(Array(args.dropFirst()))
+                guard let id = options["id"], !id.isEmpty else {
+                    throw CalendarHelperError("Missing required --id")
+                }
+                let event = try requireEvent(id: id)
+                if let title = options["title"] {
+                    event.title = title
+                }
+                if let startValue = options["start"] {
+                    event.startDate = try parseISO(startValue)
+                }
+                if let endValue = options["end"] {
+                    event.endDate = try parseISO(endValue)
+                }
+                if event.endDate <= event.startDate {
+                    throw CalendarHelperError("end must be after start")
+                }
+                if let allDayValue = options["all-day"] {
+                    event.isAllDay = try parseBool(allDayValue, name: "all-day")
+                }
+                if let location = options["location"] {
+                    event.location = emptyToNil(location)
+                }
+                if let notes = options["notes"] {
+                    event.notes = emptyToNil(notes)
+                }
+                if let calendarValue = options["calendar"] {
+                    event.calendar = try resolveCalendar(calendarValue)
+                }
+                try store.save(event, span: .thisEvent, commit: true)
+                try output(listedEvent(event))
+            case "delete-event":
+                let options = try parseOptions(Array(args.dropFirst()))
+                guard let id = options["id"], !id.isEmpty else {
+                    throw CalendarHelperError("Missing required --id")
+                }
+                let event = try requireEvent(id: id)
+                let deletedEvent = listedEvent(event)
+                try store.remove(event, span: .thisEvent, commit: true)
+                try output(deletedEvent)
             default:
                 throw CalendarHelperError("Unknown command: \(command)")
             }
@@ -141,6 +182,35 @@ struct CalendarHelper {
             }
     }
 
+    static func requireEvent(id: String) throws -> EKEvent {
+        if let event = store.event(withIdentifier: id) {
+            return event
+        }
+        throw CalendarHelperError("Event not found: \(id)")
+    }
+
+    static func listedEvent(_ event: EKEvent) -> ListedCalendarEvent {
+        ListedCalendarEvent(
+            id: event.eventIdentifier,
+            calendarId: event.calendar.calendarIdentifier,
+            calendar: event.calendar.title,
+            title: event.title ?? "",
+            start: formatLocalISO(event.startDate),
+            end: formatLocalISO(event.endDate),
+            allDay: event.isAllDay,
+            location: emptyToNil(event.location),
+            notes: emptyToNil(event.notes),
+            url: event.url?.absoluteString
+        )
+    }
+
+    static func resolveCalendar(_ value: String) throws -> EKCalendar {
+        guard let calendar = try resolveCalendars(value)?.first else {
+            throw CalendarHelperError("Missing required calendar")
+        }
+        return calendar
+    }
+
     static func resolveCalendars(_ value: String?) throws -> [EKCalendar]? {
         guard let rawValue = value?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
             return nil
@@ -188,6 +258,17 @@ struct CalendarHelper {
             throw CalendarHelperError("Missing required --\(name)")
         }
         return try parseISO(value)
+    }
+
+    static func parseBool(_ value: String, name: String) throws -> Bool {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes":
+            return true
+        case "false", "0", "no":
+            return false
+        default:
+            throw CalendarHelperError("Invalid boolean for --\(name): \(value)")
+        }
     }
 
     static func parseISO(_ value: String) throws -> Date {

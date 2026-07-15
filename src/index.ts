@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { DEFAULT_MAX_BODY_CHARS } from "./config.js";
 import { INSTANCE_LABEL, TOOL_PREFIX } from "./config.js";
-import { createCalendarEvent, listCalendarEvents, listCalendarEventsForDay, listCalendars } from "./calendar.js";
+import { createCalendarEvent, deleteCalendarEvent, listCalendarEvents, listCalendarEventsForDay, listCalendars, updateCalendarEvent } from "./calendar.js";
 import {
   batchModifyMessageLabels,
   collectGmailMessageIds,
@@ -677,6 +677,64 @@ server.registerTool(
           location,
           notes,
           attendees,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("update_calendar_event"),
+  {
+    description:
+      "Modify one macOS Calendar event by EventKit event ID. Provide at least one field to change. Empty location or notes clears that field.",
+    inputSchema: {
+      id: z.string().min(1).max(1000).describe("Event ID returned by list_calendar_events or list_calendar_day_events"),
+      title: z.string().min(1).max(500).optional().describe("New event title"),
+      start: z.string().datetime({ offset: true }).optional().describe("New start datetime, e.g. 2026-07-01T15:00:00+02:00"),
+      end: z.string().datetime({ offset: true }).optional().describe("New end datetime, e.g. 2026-07-01T16:00:00+02:00"),
+      calendar: z.string().min(1).max(500).optional().describe("Optional destination macOS Calendar name or ID"),
+      location: z.string().max(2000).optional().describe("New event location; empty string clears the location"),
+      notes: z.string().max(20000).optional().describe("New event notes/description; empty string clears the notes"),
+      allDay: z.boolean().optional().describe("Whether the event is an all-day event"),
+    },
+  },
+  async ({ id, title, start, end, calendar, location, notes, allDay }) => {
+    try {
+      return jsonResponse({
+        event: await updateCalendarEvent({
+          id,
+          title,
+          start,
+          end,
+          calendar,
+          location,
+          notes,
+          allDay,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("delete_calendar_event"),
+  {
+    description:
+      "Delete one macOS Calendar event by EventKit event ID. The response returns the deleted event details for confirmation.",
+    inputSchema: {
+      id: z.string().min(1).max(1000).describe("Event ID returned by list_calendar_events or list_calendar_day_events"),
+    },
+  },
+  async ({ id }) => {
+    try {
+      return jsonResponse({
+        deletedEvent: await deleteCalendarEvent({
+          id,
         }),
       });
     } catch (error) {

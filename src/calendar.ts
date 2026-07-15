@@ -57,6 +57,21 @@ export type ListedCalendarEvent = {
   url: string | null;
 };
 
+export type CalendarEventUpdateInput = {
+  id: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  calendar?: string;
+  location?: string;
+  notes?: string;
+  allDay?: boolean;
+};
+
+export type CalendarEventDeleteInput = {
+  id: string;
+};
+
 function execFileAsync(command: string, args: string[], timeoutMs = 29_000): Promise<string> {
   const { promise, resolve, reject } = Promise.withResolvers<string>();
   execFile(command, args, { encoding: "utf8", timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
@@ -271,4 +286,90 @@ export async function listCalendarEventsForDay(query: CalendarDayEventQuery): Pr
     end: localIsoWithOffset(end),
     maxResults: query.maxResults,
   });
+}
+
+export async function updateCalendarEvent(input: CalendarEventUpdateInput): Promise<ListedCalendarEvent> {
+  const id = input.id.trim();
+  if (!id) {
+    throw new Error("id is required.");
+  }
+  if (
+    input.title === undefined &&
+    input.start === undefined &&
+    input.end === undefined &&
+    input.calendar === undefined &&
+    input.location === undefined &&
+    input.notes === undefined &&
+    input.allDay === undefined
+  ) {
+    throw new Error("At least one event field must be provided.");
+  }
+
+  if (input.start !== undefined) {
+    requireValidDate(input.start, "start");
+  }
+  if (input.end !== undefined) {
+    requireValidDate(input.end, "end");
+  }
+  if (input.start !== undefined && input.end !== undefined) {
+    const startDate = requireValidDate(input.start, "start");
+    const endDate = requireValidDate(input.end, "end");
+    if (endDate.getTime() <= startDate.getTime()) {
+      throw new Error("end must be after start.");
+    }
+  }
+
+  const args = ["update-event", "--id", id];
+  if (input.title !== undefined) {
+    const title = input.title.trim();
+    if (!title) {
+      throw new Error("title cannot be empty.");
+    }
+    args.push("--title", title);
+  }
+  if (input.start !== undefined) {
+    args.push("--start", input.start);
+  }
+  if (input.end !== undefined) {
+    args.push("--end", input.end);
+  }
+  if (input.calendar !== undefined) {
+    const calendar = input.calendar.trim();
+    if (!calendar) {
+      throw new Error("calendar cannot be empty.");
+    }
+    args.push("--calendar", calendar);
+  }
+  if (input.location !== undefined) {
+    args.push("--location", input.location.trim());
+  }
+  if (input.notes !== undefined) {
+    args.push("--notes", input.notes.trim());
+  }
+  if (input.allDay !== undefined) {
+    args.push("--all-day", String(input.allDay));
+  }
+
+  const event = await runCalendarHelper<ListedCalendarEvent>(args);
+  return {
+    ...event,
+    location: nullIfEmpty(event.location ?? undefined),
+    notes: nullIfEmpty(event.notes ?? undefined),
+    url: nullIfEmpty(event.url ?? undefined),
+  };
+}
+
+export async function deleteCalendarEvent(input: CalendarEventDeleteInput): Promise<ListedCalendarEvent> {
+  const id = input.id.trim();
+  if (!id) {
+    throw new Error("id is required.");
+  }
+
+  const event = await runCalendarHelper<ListedCalendarEvent>(["delete-event", "--id", id]);
+  return {
+    ...event,
+    location: nullIfEmpty(event.location ?? undefined),
+    notes: nullIfEmpty(event.notes ?? undefined),
+    url: nullIfEmpty(event.url ?? undefined),
+  };
 }
