@@ -1,6 +1,6 @@
 # Gmail Read-Only MCP Server
 
-This project exposes your Gmail mailbox to MCP-compatible AI agents through local stdio tools. It can check auth status, list labels, search messages, fetch one message by ID, create labels, apply labels, archive messages, send replies, send new messages, and create macOS Calendar events.
+This project exposes your Gmail mailbox to MCP-compatible AI agents through local stdio tools. It can check auth status, list labels, search messages, fetch one message by ID, create labels, apply labels, archive messages, send replies, send new messages, list macOS Calendar events, and create macOS Calendar events.
 
 ## Tools
 
@@ -18,6 +18,9 @@ This project exposes your Gmail mailbox to MCP-compatible AI agents through loca
 - `gmail_create_label`: creates a Gmail label.
 - `gmail_reply_message`: sends a plain-text reply to a message, with optional CC recipients.
 - `gmail_send_message`: sends a new plain-text Gmail message.
+- `gmail_list_calendars`: lists local macOS Calendar calendars with IDs, names, and writability.
+- `gmail_list_calendar_events`: lists macOS Calendar events overlapping an explicit time window, optionally scoped to one calendar.
+- `gmail_list_calendar_day_events`: lists all macOS Calendar events for one local date across all calendars without caller-side calendar iteration.
 - `gmail_create_calendar_event`: creates a macOS Calendar event via local system automation, with optional attendee invites by email.
 - `gmail_list_attachments`: lists attachments on a message, including inline payload attachments Gmail does not store behind a separate attachment fetch.
 - `gmail_get_attachment`: reads one attachment by attachment ID. PDFs are text-extracted when possible; other binary files are returned as standard base64.
@@ -140,6 +143,7 @@ Then configure one MCP server entry per account:
 ## Notes
 
 - The service uses Gmail's `gmail.modify` and `gmail.send` scopes so it can label, archive, reply to, send mail, and read attachments.
+- `gmail_list_calendar_day_events` computes the local day window on the MCP host and queries EventKit across all calendars in one helper call.
 - `gmail_create_calendar_event` uses macOS `osascript` automation and may trigger a one-time Calendar permission prompt from the OS.
 - `gmail_create_calendar_event` accepts optional `attendees` as email addresses. Invitation delivery depends on the selected Calendar account supporting event invitations.
 - `gmail_get_attachment` returns text for textual attachments, text-extracted PDFs when possible, and standard base64 for other binary attachments.

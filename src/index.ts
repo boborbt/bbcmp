@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { DEFAULT_MAX_BODY_CHARS } from "./config.js";
 import { INSTANCE_LABEL, TOOL_PREFIX } from "./config.js";
-import { createCalendarEvent } from "./calendar.js";
+import { createCalendarEvent, listCalendarEvents, listCalendarEventsForDay, listCalendars } from "./calendar.js";
 import {
   batchModifyMessageLabels,
   collectGmailMessageIds,
@@ -570,6 +570,76 @@ server.registerTool(
 
       return jsonResponse({
         message: summarizeMessage(message),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("list_calendars"),
+  {
+    description: "List local macOS Calendar calendars with IDs, names, and writability.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      return jsonResponse({ calendars: await listCalendars() });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("list_calendar_events"),
+  {
+    description:
+      "List macOS Calendar events overlapping a time window. Dates must be ISO 8601 datetimes with an explicit timezone offset. Use list_calendar_day_events for all events on one local date.",
+    inputSchema: {
+      start: z.string().datetime({ offset: true }).describe("Window start datetime, e.g. 2026-07-01T00:00:00+02:00"),
+      end: z.string().datetime({ offset: true }).describe("Window end datetime, e.g. 2026-07-02T00:00:00+02:00"),
+      calendar: z.string().min(1).max(500).optional().describe("Optional macOS Calendar name; omitting it searches all calendars"),
+      maxResults: z.number().int().min(1).max(500).default(100).describe("Maximum events to return"),
+    },
+  },
+  async ({ start, end, calendar, maxResults }) => {
+    try {
+      return jsonResponse({
+        events: await listCalendarEvents({
+          start,
+          end,
+          calendar,
+          maxResults,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("list_calendar_day_events"),
+  {
+    description:
+      "List all macOS Calendar events overlapping one local calendar day across all calendars. Use this for queries like 'events on 2026-09-15' without iterating calendars.",
+    inputSchema: {
+      date: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .describe("Local calendar date in YYYY-MM-DD format, e.g. 2026-09-15"),
+      maxResults: z.number().int().min(1).max(500).default(100).describe("Maximum events to return"),
+    },
+  },
+  async ({ date, maxResults }) => {
+    try {
+      return jsonResponse({
+        events: await listCalendarEventsForDay({
+          date,
+          maxResults,
+        }),
       });
     } catch (error) {
       return errorResponse(error);
