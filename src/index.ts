@@ -651,7 +651,7 @@ server.registerTool(
   toolName("create_calendar_event"),
   {
     description:
-      "Create a macOS Calendar event using local system automation. Dates must be ISO 8601 datetimes with an explicit timezone offset.",
+      "Create a macOS Calendar event using the Swift EventKit helper. Dates must be ISO 8601 datetimes with an explicit timezone offset.",
     inputSchema: {
       title: z.string().min(1).max(500).describe("Event title"),
       start: z.string().datetime({ offset: true }).describe("Start datetime, e.g. 2026-07-01T15:00:00+02:00"),
@@ -659,14 +659,10 @@ server.registerTool(
       calendar: z.string().min(1).max(500).optional().describe("Optional macOS Calendar name; defaults to the first writable calendar"),
       location: z.string().max(2000).optional().describe("Optional event location"),
       notes: z.string().max(20000).optional().describe("Optional event notes/description"),
-      attendees: z
-        .array(z.string().email().max(320))
-        .max(200)
-        .optional()
-        .describe("Optional attendee email addresses to invite"),
+      allDay: z.boolean().optional().describe("Whether to create the event as all-day. For inclusive multi-day all-day events, set end to midnight after the final day."),
     },
   },
-  async ({ title, start, end, calendar, location, notes, attendees }) => {
+  async ({ title, start, end, calendar, location, notes, allDay }) => {
     try {
       return jsonResponse({
         event: await createCalendarEvent({
@@ -676,7 +672,7 @@ server.registerTool(
           calendar,
           location,
           notes,
-          attendees,
+          allDay,
         }),
       });
     } catch (error) {

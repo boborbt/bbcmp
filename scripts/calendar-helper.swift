@@ -37,7 +37,7 @@ struct CalendarHelper {
             try await requireCalendarAccess()
             let args = Array(CommandLine.arguments.dropFirst())
             guard let command = args.first else {
-                throw CalendarHelperError("Usage: calendar-helper <list-calendars|list-events|update-event|delete-event> [options]")
+                throw CalendarHelperError("Usage: calendar-helper <list-calendars|list-events|create-event|update-event|delete-event> [options]")
             }
 
             switch command {
@@ -53,6 +53,37 @@ struct CalendarHelper {
                 let maxResults = min(max(Int(options["max"] ?? "100") ?? 100, 1), 500)
                 let calendars = try resolveCalendars(options["calendar"])
                 try output(listEvents(start: start, end: end, calendars: calendars, maxResults: maxResults))
+            case "create-event":
+                let options = try parseOptions(Array(args.dropFirst()))
+                guard let rawTitle = options["title"] else {
+                    throw CalendarHelperError("Missing required --title")
+                }
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty else {
+                    throw CalendarHelperError("title cannot be empty")
+                }
+                let start = try requiredDate(options, "start")
+                let end = try requiredDate(options, "end")
+                guard end > start else {
+                    throw CalendarHelperError("end must be after start")
+                }
+                let event = EKEvent(eventStore: store)
+                event.title = title
+                event.startDate = start
+                event.endDate = end
+                event.isAllDay = try options["all-day"].map { try parseBool($0, name: "all-day") } ?? false
+                event.location = emptyToNil(options["location"])
+                event.notes = emptyToNil(options["notes"])
+                if let calendarValue = options["calendar"] {
+                    event.calendar = try resolveCalendar(calendarValue)
+                } else {
+                    event.calendar = try defaultWritableCalendar()
+                }
+                guard event.calendar.allowsContentModifications else {
+                    throw CalendarHelperError("Calendar is not writable: \(event.calendar.title)")
+                }
+                try store.save(event, span: .thisEvent, commit: true)
+                try output(listedEvent(event))
             case "update-event":
                 let options = try parseOptions(Array(args.dropFirst()))
                 guard let id = options["id"], !id.isEmpty else {
@@ -154,6 +185,13 @@ struct CalendarHelper {
                 writable: $0.allowsContentModifications
             )
         }
+    }
+
+    static func defaultWritableCalendar() throws -> EKCalendar {
+        guard let calendar = store.calendars(for: .event).first(where: { $0.allowsContentModifications }) else {
+            throw CalendarHelperError("No writable macOS Calendar was found")
+        }
+        return calendar
     }
 
     static func listEvents(start: Date, end: Date, calendars: [EKCalendar]?, maxResults: Int) -> [ListedCalendarEvent] {
