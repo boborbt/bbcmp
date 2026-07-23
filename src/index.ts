@@ -6,6 +6,7 @@ import { z } from "zod";
 import { DEFAULT_MAX_BODY_CHARS } from "./config.js";
 import { INSTANCE_LABEL, TOOL_PREFIX } from "./config.js";
 import { createCalendarEvent, deleteCalendarEvent, listCalendarEvents, listCalendarEventsForDay, listCalendars, updateCalendarEvent } from "./calendar.js";
+import { completeReminder, createReminder, deleteReminder, listReminderLists, listReminders, updateReminder } from "./reminder.js";
 import {
   batchModifyMessageLabels,
   collectGmailMessageIds,
@@ -733,6 +734,148 @@ server.registerTool(
           id,
         }),
       });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("list_reminder_lists"),
+  {
+    description: "List local macOS Reminders lists with IDs, names, and writability.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      return jsonResponse({ lists: await listReminderLists() });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("create_reminder"),
+  {
+    description:
+      "Create a macOS Reminder using the Swift EventKit helper. The due datetime must be ISO 8601 with an explicit timezone offset. An absolute alarm is attached for the due time.",
+    inputSchema: {
+      title: z.string().min(1).max(500).describe("Reminder title"),
+      due: z.string().datetime({ offset: true }).describe("Due datetime, e.g. 2026-07-25T09:00:00+02:00"),
+      list: z.string().min(1).max(500).optional().describe("Optional Reminders list name or ID; defaults to the default writable reminders list"),
+      notes: z.string().max(20000).optional().describe("Optional reminder notes"),
+    },
+  },
+  async ({ title, due, list, notes }) => {
+    try {
+      return jsonResponse({
+        reminder: await createReminder({
+          title,
+          due,
+          list,
+          notes,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("list_reminders"),
+  {
+    description:
+      "List local macOS Reminders. By default only incomplete reminders are returned; optionally filter by list and due window.",
+    inputSchema: {
+      list: z.string().min(1).max(500).optional().describe("Optional Reminders list name or ID"),
+      includeCompleted: z.boolean().default(false).describe("Include completed reminders"),
+      dueStart: z.string().datetime({ offset: true }).optional().describe("Optional inclusive due-window start"),
+      dueEnd: z.string().datetime({ offset: true }).optional().describe("Optional inclusive due-window end"),
+      maxResults: z.number().int().min(1).max(500).default(100).describe("Maximum reminders to return"),
+    },
+  },
+  async ({ list, includeCompleted, dueStart, dueEnd, maxResults }) => {
+    try {
+      return jsonResponse({
+        reminders: await listReminders({
+          list,
+          includeCompleted,
+          dueStart,
+          dueEnd,
+          maxResults,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("update_reminder"),
+  {
+    description:
+      "Modify one macOS Reminder by EventKit reminder ID. Provide at least one field to change. Empty notes clears notes; clearDue removes the due date and alarm.",
+    inputSchema: {
+      id: z.string().min(1).max(1000).describe("Reminder ID returned by list_reminders or create_reminder"),
+      title: z.string().min(1).max(500).optional().describe("New reminder title"),
+      due: z.string().datetime({ offset: true }).optional().describe("New due datetime, e.g. 2026-07-25T09:00:00+02:00"),
+      clearDue: z.boolean().optional().describe("Remove the reminder due date and alarm"),
+      list: z.string().min(1).max(500).optional().describe("Destination Reminders list name or ID"),
+      notes: z.string().max(20000).optional().describe("New reminder notes; empty string clears notes"),
+      completed: z.boolean().optional().describe("Set completion state"),
+    },
+  },
+  async ({ id, title, due, clearDue, list, notes, completed }) => {
+    try {
+      return jsonResponse({
+        reminder: await updateReminder({
+          id,
+          title,
+          due,
+          clearDue,
+          list,
+          notes,
+          completed,
+        }),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("complete_reminder"),
+  {
+    description: "Mark one macOS Reminder complete by EventKit reminder ID.",
+    inputSchema: {
+      id: z.string().min(1).max(1000).describe("Reminder ID returned by list_reminders or create_reminder"),
+    },
+  },
+  async ({ id }) => {
+    try {
+      return jsonResponse({ reminder: await completeReminder({ id }) });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  },
+);
+
+server.registerTool(
+  toolName("delete_reminder"),
+  {
+    description:
+      "Delete one macOS Reminder by EventKit reminder ID. The response returns the deleted reminder details for confirmation.",
+    inputSchema: {
+      id: z.string().min(1).max(1000).describe("Reminder ID returned by list_reminders or create_reminder"),
+    },
+  },
+  async ({ id }) => {
+    try {
+      return jsonResponse({ deletedReminder: await deleteReminder({ id }) });
     } catch (error) {
       return errorResponse(error);
     }
